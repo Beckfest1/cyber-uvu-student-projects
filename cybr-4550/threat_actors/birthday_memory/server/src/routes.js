@@ -6,6 +6,8 @@ import { decorate } from './dates.js';
 const router = Router();
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DEFAULT_LIMIT = 100;
+const MAX_LIMIT = 200;
 
 const SELECT_COLUMNS = `
   id, first_name, last_name, birthdate, phone, email, created_at, updated_at
@@ -15,12 +17,41 @@ const SELECT_COLUMNS = `
 const wrap = (handler) => (req, res, next) =>
   Promise.resolve(handler(req, res, next)).catch(next);
 
-/** GET /api/birthdays?q=&month= — list, optionally filtered. */
+/** Parses bounded pagination parameters to prevent unbounded bulk dumps. */
+function parsePagination(query) {
+  const rawLimit = Number(query.limit);
+  const rawOffset = Number(query.offset);
+  const limit =
+    Number.isInteger(rawLimit) && rawLimit > 0
+      ? Math.min(rawLimit, MAX_LIMIT)
+      : DEFAULT_LIMIT;
+  const offset =
+    Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  return { limit, offset };
+}
+
+/** Writes structured, PII-free audit logs for state-changing actions. */
+function auditLog(req, action, recordId) {
+  console.info(
+    JSON.stringify({
+      event: 'audit',
+      timestamp: new Date().toISOString(),
+      action,
+      recordId,
+      method: req.method,
+      path: req.originalUrl,
+      ip: req.ip,
+    }),
+  );
+}
+
+/** GET /api/birthdays?q=&month=&limit=&offset= — list, optionally filtered. */
 router.get(
   '/',
   wrap(async (req, res) => {
-    const q = String(req.query.q ?? '').trim();
+    const q = String(req.query.q ?? '').trim().slice(0, 100);
     const month = Number(req.query.month);
+    const { limit, offset } = parsePagination(req.query);
 
     const conditions = [];
     const params = [];
@@ -43,6 +74,9 @@ router.get(
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    params.push(limit, offset);
+    const limitParam = `$${params.length - 1}`;
+    const offsetParam = `$${params.length}`;
 
     const { rows } = await pool.query(
       `SELECT ${SELECT_COLUMNS}
@@ -50,28 +84,37 @@ router.get(
          ${where}
         ORDER BY EXTRACT(MONTH FROM birthdate),
                  EXTRACT(DAY FROM birthdate),
-                 lower(first_name)`,
+                 lower(first_name)
+        LIMIT ${limitParam} OFFSET ${offsetParam}`,
       params,
     );
 
+    res.set('X-Limit', String(limit));
+    res.set('X-Offset', String(offset));
     res.json(rows.map((row) => decorate(mapRow(row))));
   }),
 );
 
-/** GET /api/birthdays/upcoming?days=30 — soonest celebrations first. */
+/** GET /api/birthdays/upcoming?days=30&limit=100 — soonest celebrations first. */
 router.get(
   '/upcoming',
   wrap(async (req, res) => {
     const days = Number(req.query.days);
     const window = Number.isFinite(days) && days > 0 ? Math.min(days, 366) : 30;
+    const { limit } = parsePagination(req.query);
 
-    const { rows } = await pool.query(`SELECT ${SELECT_COLUMNS} FROM birthdays`);
+    const { rows } = await pool.query(
+      `SELECT ${SELECT_COLUMNS} FROM birthdays LIMIT $1`,
+      [MAX_LIMIT],
+    );
 
     const upcoming = rows
       .map((row) => decorate(mapRow(row)))
       .filter((entry) => entry.daysUntil <= window)
-      .sort((a, b) => a.daysUntil - b.daysUntil || a.firstName.localeCompare(b.firstName));
+      .sort((a, b) => a.daysUntil - b.daysUntil || a.firstName.localeCompare(b.firstName))
+      .slice(0, limit);
 
+    res.set('X-Limit', String(limit));
     res.json(upcoming);
   }),
 );
@@ -90,7 +133,9 @@ router.post(
       [value.firstName, value.lastName, value.birthdate, value.phone, value.email],
     );
 
-    res.status(201).json(decorate(mapRow(rows[0])));
+    const created = decorate(mapRow(rows[0]));
+    auditLog(req, 'CREATE_BIRTHDAY', created.id);
+    res.status(201).json(created);
   }),
 );
 
@@ -126,7 +171,9 @@ router.put(
     );
 
     if (rows.length === 0) return res.status(404).json({ error: 'Birthday not found.' });
-    res.json(decorate(mapRow(rows[0])));
+    const updated = decorate(mapRow(rows[0]));
+    auditLog(req, 'UPDATE_BIRTHDAY', updated.id);
+    res.json(updated);
   }),
 );
 
@@ -143,6 +190,7 @@ router.delete(
     ]);
 
     if (rowCount === 0) return res.status(404).json({ error: 'Birthday not found.' });
+    auditLog(req, 'DELETE_BIRTHDAY', req.params.id);
     res.status(204).end();
   }),
 );

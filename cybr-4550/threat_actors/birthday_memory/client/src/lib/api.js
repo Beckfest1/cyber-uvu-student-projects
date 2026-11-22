@@ -1,4 +1,5 @@
 const BASE = import.meta.env.VITE_API_URL ?? '';
+const API_KEY = import.meta.env.VITE_API_KEY ?? '';
 
 /** Error carrying per-field validation messages from the API. */
 export class ApiError extends Error {
@@ -11,11 +12,18 @@ export class ApiError extends Error {
 }
 
 async function request(path, options = {}) {
+  const { headers: extraHeaders, ...rest } = options;
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {}),
+    ...extraHeaders,
+  };
+
   let response;
   try {
     response = await fetch(`${BASE}${path}`, {
-      headers: { 'Content-Type': 'application/json' },
-      ...options,
+      ...rest,
+      headers,
     });
   } catch {
     throw new ApiError('Cannot reach the server. Is the API running?');

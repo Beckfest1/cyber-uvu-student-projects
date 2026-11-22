@@ -1,21 +1,44 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
     container_name: thebirthdates-db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: thebirthdates
-      POSTGRES_USER: birthday
-      POSTGRES_PASSWORD: birthday
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
     ports:
-      - "5544:5432"
+      - "127.0.0.1:5544:5432"
     volumes:
       - thebirthdates-data:/var/lib/postgresql/data
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 100
+    networks:
+      - thebirthdates-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U birthday -d thebirthdates"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 10
 
 volumes:
   thebirthdates-data:
+
+networks:
+  thebirthdates-net:
+    driver: bridge

@@ -1,0 +1,8 @@
+=== SELECT as bm_app (should succeed) ===
+ count 
+-------
+     0
+(1 row)
+
+=== DROP TABLE as bm_app (should fail with permission denied) ===
+ERROR:  must be owner of table birthdays

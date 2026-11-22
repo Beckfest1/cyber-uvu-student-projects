@@ -1,3 +1,5 @@
+import 'dotenv/config';
+import fs from 'node:fs';
 import pg from 'pg';
 
 // `birthdate` is a DATE column. node-postgres parses DATE into a JS Date in the
@@ -6,15 +8,28 @@ pg.types.setTypeParser(1082, (value) => value);
 
 const {
   DATABASE_URL,
-  PGHOST = 'localhost',
+  PGHOST = '127.0.0.1',
   PGPORT = '5544',
-  PGUSER = 'birthday',
-  PGPASSWORD = 'birthday',
-  PGDATABASE = 'thebirthdates',
+  PGUSER,
+  PGPASSWORD,
+  PGDATABASE,
   PGSSL,
+  PGSSLROOTCERT,
 } = process.env;
 
-const ssl = PGSSL === 'true' ? { rejectUnauthorized: false } : undefined;
+if (!DATABASE_URL && (!PGUSER || !PGPASSWORD || !PGDATABASE)) {
+  throw new Error(
+    '[db] Missing required database credentials. Set DATABASE_URL or PGUSER, PGPASSWORD, and PGDATABASE in server/.env.',
+  );
+}
+
+const ssl =
+  PGSSL === 'true'
+    ? {
+        rejectUnauthorized: true,
+        ...(PGSSLROOTCERT ? { ca: fs.readFileSync(PGSSLROOTCERT, 'utf8') } : {}),
+      }
+    : undefined;
 
 export const pool = DATABASE_URL
   ? new pg.Pool({ connectionString: DATABASE_URL, ssl })
@@ -32,33 +47,9 @@ pool.on('error', (error) => {
 });
 
 export async function initSchema() {
-  await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS birthdays (
-      id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      first_name  text NOT NULL,
-      last_name   text NOT NULL,
-      birthdate   date NOT NULL,
-      phone       text,
-      email       text,
-      created_at  timestamptz NOT NULL DEFAULT now(),
-      updated_at  timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS birthdays_name_idx
-      ON birthdays (lower(last_name), lower(first_name))
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS birthdays_month_day_idx
-      ON birthdays (
-        (EXTRACT(MONTH FROM birthdate)),
-        (EXTRACT(DAY FROM birthdate))
-      )
-  `);
+  // Runtime connects as the least-privilege bm_app role (DML only).
+  // Schema creation and migrations are handled separately by bm_admin.
+  await pool.query('SELECT 1 FROM birthdays LIMIT 0');
 }
 
 export function mapRow(row) {
